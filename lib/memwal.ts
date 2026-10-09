@@ -1,14 +1,26 @@
 import "server-only";
 
-import { MemWal, type RecallMemory } from "@mysten-incubation/memwal";
+import { MemWal, type AnalyzeWaitResult, type RecallMemory } from "@mysten-incubation/memwal";
 
-export const DEVELOPMENT_NAMESPACE = "recallos-development";
+export type MemorySaveSummary = {
+  factCount: number;
+  total: number;
+  succeeded: number;
+  failed: number;
+  done: number;
+  jobFailed: number;
+  timedOut: number;
+};
 
 const RECALL_LIMIT = 5;
 const RECALL_MAX_DISTANCE = 0.8;
 const RECALL_MAX_TOKENS = 1_000;
+// analyze() has its own 60s SDK deadline. This budget is only for the
+// follow-up remember-job poll. 30s was shorter than typical Walrus
+// encrypt/upload/index, so jobs still running were counted as failures.
+const SAVE_WAIT_TIMEOUT_MS = 120_000;
 
-export function getMemWal() {
+export function getMemWal(namespace: string) {
   const key = process.env.MEMWAL_PRIVATE_KEY;
   const accountId = process.env.MEMWAL_ACCOUNT_ID;
   const serverUrl = process.env.MEMWAL_SERVER_URL;
@@ -21,17 +33,17 @@ export function getMemWal() {
     key,
     accountId,
     serverUrl,
-    namespace: DEVELOPMENT_NAMESPACE,
+    namespace,
   });
 }
 
-export async function recallForChat(query: string): Promise<RecallMemory[]> {
-  const memwal = getMemWal();
+export async function recallForChat(query: string, namespace: string): Promise<RecallMemory[]> {
+  const memwal = getMemWal(namespace);
 
   try {
     const result = await memwal.recall({
       query,
-      namespace: DEVELOPMENT_NAMESPACE,
+      namespace,
       limit: RECALL_LIMIT,
       maxDistance: RECALL_MAX_DISTANCE,
       maxTokens: RECALL_MAX_TOKENS,
@@ -43,22 +55,44 @@ export async function recallForChat(query: string): Promise<RecallMemory[]> {
   }
 }
 
-export async function saveUsefulFacts(text: string) {
-  const memwal = getMemWal();
+export function summarizeMemorySave(result: AnalyzeWaitResult): MemorySaveSummary {
+  let done = 0;
+  let jobFailed = 0;
+  let timedOut = 0;
+
+  for (const item of result.results) {
+    if (item.status === "done") done += 1;
+    else if (item.status === "timeout") timedOut += 1;
+    else jobFailed += 1;
+  }
+
+  return {
+    factCount: result.facts.length,
+    total: result.total,
+    succeeded: result.succeeded,
+    failed: result.failed,
+    done,
+    jobFailed,
+    timedOut,
+  };
+}
+
+export async function saveUsefulFacts(text: string, namespace: string) {
+  const memwal = getMemWal(namespace);
 
   try {
     return await memwal.analyzeAndWait(
       text,
-      DEVELOPMENT_NAMESPACE,
-      { timeoutMs: 30_000 },
+      namespace,
+      { timeoutMs: SAVE_WAIT_TIMEOUT_MS },
     );
   } finally {
     memwal.destroy();
   }
 }
 
-export async function getMemoryStatus() {
-  const memwal = getMemWal();
+export async function getMemoryStatus(namespace: string) {
+  const memwal = getMemWal(namespace);
 
   try {
     const health = await memwal.health();
@@ -72,12 +106,12 @@ export async function getMemoryStatus() {
 
     while (hasMore) {
       const page = await memwal.listNamespaces({ cursor, limit: 100 });
-      const namespace = page.namespaces.find(
-        (entry) => entry.name === DEVELOPMENT_NAMESPACE,
+      const match = page.namespaces.find(
+        (entry) => entry.name === namespace,
       );
 
-      if (namespace) {
-        memoryCount = namespace.memory_count;
+      if (match) {
+        memoryCount = match.memory_count;
         break;
       }
 

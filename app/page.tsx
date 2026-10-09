@@ -14,6 +14,8 @@ type RetrievedMemory = {
 };
 
 type MemoryState = {
+  identity?: string;
+  testerId?: string;
   connected: boolean;
   checking: boolean;
   memoryCount: number;
@@ -84,10 +86,12 @@ export default function Home() {
   const inFlight = useRef(false);
   const abortController = useRef<AbortController | null>(null);
   const conversationEpoch = useRef(0);
+  const activeTester = useRef<string | undefined>(undefined);
 
   const refreshMemoryStatus = useCallback(async () => {
     try {
       const response = await fetch("/api/memory/status", { cache: "no-store" });
+      if (response.status === 401) { window.location.assign('/tester'); return; }
       const data: unknown = await response.json();
       const connected =
         response.ok && data !== null && typeof data === "object" &&
@@ -98,8 +102,16 @@ export default function Home() {
           ? data.memoryCount
           : 0;
 
+      const testerId = data && typeof data === "object" && "testerId" in data && typeof data.testerId === "string" ? data.testerId : undefined;
+      if (activeTester.current && testerId && activeTester.current !== testerId) {
+        window.location.reload();
+        return;
+      }
+      activeTester.current = testerId;
       setMemoryState((current) => ({
         ...current,
+        testerId: data && typeof data === 'object' && 'testerId' in data && typeof data.testerId === 'string' ? data.testerId : undefined,
+        identity: data && typeof data === 'object' && 'identity' in data && typeof data.identity === 'string' ? data.identity : undefined,
         connected,
         checking: false,
         memoryCount: connected ? memoryCount : 0,
@@ -129,8 +141,9 @@ export default function Home() {
       const response = await fetch("/api/memory/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, testerId: memoryState.testerId }),
       });
+      if (response.status === 401) { window.location.assign('/tester'); return; }
       const data: unknown = await response.json();
 
       if (!response.ok) {
@@ -174,6 +187,7 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          testerId: memoryState.testerId,
           messages: conversation.slice(-20).map(({ role, content }) => ({
             role,
             content,
@@ -181,6 +195,7 @@ export default function Home() {
         }),
         signal: controller.signal,
       });
+      if (response.status === 401) { window.location.assign('/tester'); return; }
       const data: unknown = await response.json();
 
       if (!response.ok) {
@@ -322,10 +337,10 @@ export default function Home() {
         <div className="mt-auto rounded-xl border border-white/[0.06] bg-white/[0.025] p-3.5">
           <div className="flex items-center gap-2 text-xs font-medium text-[#a9afb9]">
             <span className="h-2 w-2 rounded-full bg-[#555b66]" />
-            RecallOS Online · {memoryState.connected ? "Memory online" : "Memory offline"}
+            <a href="/tester" className="underline">{memoryState.identity ?? "Demo tester"}</a> · {memoryState.connected ? "Memory online" : "Memory offline"}
           </div>
           <p className="mt-2 text-[11px] leading-5 text-[#666d79]">
-            {memoryState.connected ? "Walrus Memory is connected for the development identity." : "RecallOS chat is ready. Persistent memory is unavailable."}
+            {memoryState.connected ? "Walrus Memory is connected for your demo tester." : "RecallOS chat is ready. Persistent memory is unavailable."}
           </p>
         </div>
       </aside>
@@ -443,7 +458,7 @@ export default function Home() {
                 </button>
               </div>
               <p className="mt-2 text-center text-[10px] text-[#565d68]">
-                Messages are sent securely through RecallOS. {memoryState.connected ? "Walrus Memory is active for the development identity." : "Memory is unavailable."}
+                Messages are sent securely through RecallOS. {memoryState.connected ? "Walrus Memory is active for your demo tester." : "Memory is unavailable."}
               </p>
             </form>
           </div>
@@ -477,7 +492,7 @@ export default function Home() {
             <Icon><path d="M8 12h8M12 8v8" /></Icon>
           </div>
           <p className="mt-3 text-xs font-medium text-[#7c838f]">
-            {memoryState.connected ? "Development / test identity" : "No memories available"}
+            {memoryState.connected ? memoryState.identity ?? "Demo tester" : "No memories available"}
           </p>
           {memoryState.retrieved.length > 0 ? (
             <div className="mt-3 space-y-2 text-left">

@@ -1,8 +1,9 @@
+import { getTesterIdentity, isSameOrigin, testerRequired } from "@/lib/tester-session";
 import { Content, GoogleGenAI } from "@google/genai";
 import { recallForChat } from "@/lib/memwal";
 import { logOperation } from "@/lib/server-diagnostics";
 
-const DEFAULT_MODEL = "gemini-3.8-flash";
+const DEFAULT_MODEL = "gemini-2.5-flash-lite";
 const MAX_MESSAGES = 20;
 const MAX_MESSAGE_LENGTH = 4_000;
 const MAX_TOTAL_LENGTH = 24_000;
@@ -40,7 +41,12 @@ function isUsefulForMemory(text: string) {
   return true;
 }
 
+
+
 export async function POST(request: Request) {
+  if (!isSameOrigin(request)) return Response.json({ error: "Invalid request origin." }, { status: 403 });
+  const identity = await getTesterIdentity();
+  if (!identity) return testerRequired();
   const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 
   if (!apiKey) {
@@ -54,6 +60,10 @@ export async function POST(request: Request) {
     return errorResponse("The request body must be valid JSON.", 400);
   }
 
+  // Client identity is only a consistency check; it never chooses the namespace.
+  if (!body || typeof body !== "object" || !("testerId" in body) || body.testerId !== identity.id) {
+    return Response.json({ error: "Tester session changed. Reload RecallOS before continuing." }, { status: 409 });
+  }
   if (!body || typeof body !== "object") {
     return errorResponse("A messages array is required.", 400);
   }
@@ -88,7 +98,7 @@ export async function POST(request: Request) {
   const recallStartedAt = Date.now();
 
   try {
-    recalledMemories = await recallForChat(latestUserMessage);
+    recalledMemories = await recallForChat(latestUserMessage, identity.namespace);
     logOperation("walrus.recall", recallStartedAt);
   } catch (error) {
     logOperation("walrus.recall", recallStartedAt, error);
